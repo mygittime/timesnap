@@ -1,5 +1,5 @@
 {
-  "name": "timesnap",
+  "name": "wbst_timesnap",
   "version": "0.3.4-prerelease",
   "description": "Take screenshots of web pages at smooth intervals",
   "repository": {
