@@ -46,8 +46,16 @@ module.exports = async function (config) {
   var unrandom = config.unrandomize;
   var fps = config.fps, frameDuration;
   var framesToCapture;
+  var requestStartCapture = true;
   var requestStopCapture = false;
   var outputPath = path.resolve(process.cwd(), (config.outputDirectory || './'));
+  
+  /*
+    空跑张数
+    截图开始回调前将当前marker状态改为Only Animate，正常运行程序但是不截图，同时计算张数。
+    回调后在markers中插入对应张数图片
+  */
+  var skipMarkerCount = 0; 
 
   if (!url.includes('://')) {
     // assume it is a file path
@@ -165,6 +173,34 @@ module.exports = async function (config) {
     }
     await overwriteRandom(page, unrandom, log);
     await timeHandler.overwriteTime(page);
+
+    if (config.startFunctionName) {
+      requestStartCapture = false;
+      await page.exposeFunction(config.startFunctionName, ()=>{startCapture()})
+    }
+    function startCapture(){
+      //开始截图回调，不需要追加截图张数
+      if(skipMarkerCount == 0){
+        requestStartCapture = true;
+        return;
+      }
+
+      let dis = markers[2].time - markers[1].time;
+      let lastMarker = markers[markers.length-1];
+      let newMarkers = [];
+
+      for(let i=1; i<=skipMarkerCount; i++){
+        markers.push({
+          time:lastMarker.time + dis*i,
+          type:'Capture',
+          data:{
+            frameCount:lastMarker.data.frameCount + i
+          },
+          id:lastMarker.id + i
+        })
+      }
+      requestStartCapture = true;
+    }
     if (config.stopFunctionName) {
       await page.exposeFunction(config.stopFunctionName, () => requestStopCapture = true);
     }
@@ -246,19 +282,28 @@ module.exports = async function (config) {
 
     var startCaptureTime = new Date().getTime();
     var markerIndex = 0;
+
+    var intervalTime = markers[markers.length-1].time - markers[markers.length-2].time;
     while (markerIndex < markers.length && ! requestStopCapture) {
       var marker = markers[markerIndex];
       markerIndex++;
+      //线程空跑不截图
+      if(!requestStartCapture && marker.type == "Capture"){
+        skipMarkerCount++;
+        marker.type = "Only Animate";
+        await new Promise(re=>{setTimeout(e=>{re()}, intervalTime)})
+      }
       if (marker.type === 'Capture') {
         await timeHandler.goToTimeAndAnimateForCapture(page, marker.time);
         var skipCurrentFrame;
         if (config.shouldSkipFrame) {
           skipCurrentFrame = await config.shouldSkipFrame({
             page: page,
-            frameCount: marker.data.frameCount,
+            frameCount: marker.data.frameCount-skipMarkerCount,
             framesToCapture: framesToCapture
           });
         }
+
         if (skipCurrentFrame) {
           log('Skipping frame: ' + marker.data.frameCount);
         } else {
@@ -268,7 +313,8 @@ module.exports = async function (config) {
             log('Page prepared');
           }
           if (capturer.capture) {
-            await capturer.capture(config, marker.data.frameCount, framesToCapture);
+            //减去空跑张数计算图片原本的编号
+            await capturer.capture(config, marker.data.frameCount-skipMarkerCount, framesToCapture);
           }
         }
       } else if (marker.type === 'Only Animate') {
