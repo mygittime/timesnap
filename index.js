@@ -53,7 +53,7 @@ module.exports = async function (config) {
   /*
     空跑张数
     截图开始回调前将当前marker状态改为Only Animate，正常运行程序但是不截图，同时计算张数。
-    回调后在markers中插入对应张数图片
+    回调后在markers中追加对应张数的图片
   */
   var skipMarkerCount = 0; 
 
@@ -175,28 +175,40 @@ module.exports = async function (config) {
     await timeHandler.overwriteTime(page);
 
     if (config.startFunctionName) {
+      //不兼容start参数
+      delayMs = 0;
       requestStartCapture = false;
       await page.exposeFunction(config.startFunctionName, ()=>{startCapture()})
     }
     function startCapture(){
-      //开始截图回调，不需要追加截图张数
+      //截图前回调完毕，不需要追加截图张数
       if(skipMarkerCount == 0){
         requestStartCapture = true;
         return;
       }
 
-      let dis = markers[2].time - markers[1].time;
-      let lastMarker = markers[markers.length-1];
-      let newMarkers = [];
+      //计算截图时间
+      let frameCount = markers[markers.length-1].data.frameCount;
+      //图片编号
+      let frameNum = 0;
+      if(skipMarkerCount < framesToCapture){
+        for(let i=skipMarkerCount; i<=framesToCapture; i++){
+          if(markers[i].data){
+            markers[i].data.frameCount -= skipMarkerCount;
+          }
+        }
 
+        //把开始截图的序号改为1
+        frameNum = framesToCapture - skipMarkerCount;
+      }
+      //追加截图
       for(let i=1; i<=skipMarkerCount; i++){
-        markers.push({
-          time:lastMarker.time + dis*i,
+        addMarker({
+          time:frameNumToTime(frameCount+i),
           type:'Capture',
           data:{
-            frameCount:lastMarker.data.frameCount + i
-          },
-          id:lastMarker.id + i
+            frameCount:frameNum+i 
+          }
         })
       }
       requestStartCapture = true;
@@ -283,23 +295,37 @@ module.exports = async function (config) {
     var startCaptureTime = new Date().getTime();
     var markerIndex = 0;
 
-    var intervalTime = markers[markers.length-1].time - markers[markers.length-2].time;
-    while (markerIndex < markers.length && ! requestStopCapture) {
+    var intervalTime = frameNumToTime(2);
+    while (markerIndex < markers.length && !requestStopCapture) {
       var marker = markers[markerIndex];
       markerIndex++;
-      //线程空跑不截图
-      if(!requestStartCapture && marker.type == "Capture"){
-        skipMarkerCount++;
-        marker.type = "Only Animate";
-        await new Promise(re=>{setTimeout(e=>{re()}, intervalTime)})
+
+      //开始截图函数回调前 线程只运行动画不截图
+      if(!requestStartCapture){
+        //修改 markerIndex 和 marker.time 保证线程不会结束
+        if(markerIndex == markers.length){
+          markerIndex--;
+          marker.time += intervalTime;
+          marker.data.frameCount++;
+        }
+        //线程状态修改为只运行动画
+        if(marker.type !== "Run Function"){
+          //限制追加截图张数数量
+          if(skipMarkerCount < framesToCapture){
+            skipMarkerCount++;
+          }
+          marker.type = "Only Animate";
+          await new Promise(re=>{setTimeout(e=>{re()}, intervalTime)})
+        }
       }
+
       if (marker.type === 'Capture') {
         await timeHandler.goToTimeAndAnimateForCapture(page, marker.time);
         var skipCurrentFrame;
         if (config.shouldSkipFrame) {
           skipCurrentFrame = await config.shouldSkipFrame({
             page: page,
-            frameCount: marker.data.frameCount-skipMarkerCount,
+            frameCount: marker.data.frameCount,
             framesToCapture: framesToCapture
           });
         }
@@ -313,8 +339,7 @@ module.exports = async function (config) {
             log('Page prepared');
           }
           if (capturer.capture) {
-            //减去空跑张数计算图片原本的编号
-            await capturer.capture(config, marker.data.frameCount-skipMarkerCount, framesToCapture);
+            await capturer.capture(config, marker.data.frameCount, framesToCapture);
           }
         }
       } else if (marker.type === 'Only Animate') {
